@@ -3,16 +3,20 @@ use chrono::Timelike;
 use std::io::{Read, Write, Seek};
 use std::str::FromStr;
 use std::time::Duration;
+use winreg::enums::HKEY_CURRENT_USER;
+use winreg::RegKey;
 
 fn main() -> anyhow::Result<()> {
-    let api_key = match std::env::var("API_KEY") {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let cur_ver = hkcu.open_subkey("ENVIRONMENT").unwrap();
+    let api_key: String = match cur_ver.get_value("STEAM_API_KEY") {
         Ok(val) => val,
         Err(err) => {
             println!("Could not obtain API_KEY env var: {err}");
             return Ok(());
         }
     };
-    let steam_id = match std::env::var("STEAM_ID") {
+    let steam_id: String = match cur_ver.get_value("STEAM_ID") {
         Ok(val) => val,
         Err(err) => {
             println!("Could not obtain STEAM_ID env var: {err}");
