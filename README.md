@@ -1,3 +1,8 @@
+# Online Limiter
+
+Small tool which, when finished, tracks online time of specific activities and 
+blocks them after a predefined amount of time.
+
 ## License
 
 Licensed under either of
