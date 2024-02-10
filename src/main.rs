@@ -11,13 +11,15 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let steam_ids = match std::env::var("STEAM_ID") {
-        Ok(val) => vec![val],
+    let steam_id = match std::env::var("STEAM_ID") {
+        Ok(val) => val,
         Err(err) => {
             println!("Could not obtain STEAM_ID env var: {err}");
             return Ok(());
         }
     };
+
+    let steam_ids = vec![steam_id.as_str()];
 
     let allowed_duration = Duration::from_secs(4 * 60 * 60);
     let tick_interval = Duration::from_secs(30);
