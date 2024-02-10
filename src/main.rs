@@ -1,3 +1,4 @@
+use chrono::{Datelike, Local, TimeZone};
 use chrono::Timelike;
 use std::io::{Read, Write, Seek};
 use std::str::FromStr;
@@ -32,9 +33,18 @@ fn main() -> anyhow::Result<()> {
 
     let mut duration_left;
     if storage_file.metadata().unwrap().len() > 0 {
-        let mut dur_str = Default::default();
-        _ = storage_file.read_to_string(&mut dur_str);
-        duration_left = Duration::from_secs(u64::from_str(&dur_str).unwrap_or(allowed_duration.as_secs()));
+        let last_modified = storage_file.metadata().unwrap().modified().unwrap();
+        let now = Local::now();
+        let last_midnight = Local.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0).unwrap();
+        if last_modified < std::time::SystemTime::from(last_midnight) {
+            duration_left = allowed_duration;
+            storage_file.rewind().unwrap();
+            write!(storage_file, "{}", duration_left.as_secs()).unwrap();
+        } else {
+            let mut dur_str = Default::default();
+            _ = storage_file.read_to_string(&mut dur_str);
+            duration_left = Duration::from_secs(u64::from_str(&dur_str).unwrap_or(allowed_duration.as_secs()));
+        }
     } else {
         duration_left = allowed_duration;
     }
