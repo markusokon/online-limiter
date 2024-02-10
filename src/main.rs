@@ -84,7 +84,8 @@ fn main() -> anyhow::Result<()> {
 fn no_gaming() {
     let games = vec![
         ("1086940", vec!["bg3.exe", "bg3_dx11.exe"]), //Baldur's Gate 3
-        ("671860", vec!["BattleBit.exe"]) //BattleBit Remastered
+        ("671860", vec!["BattleBit.exe"]), //BattleBit Remastered
+        ("227300", vec!["eurotrucks2.exe"]) //Euro Truck Simulator 2
     ];
 
     for (_process_id, process_names) in games {
