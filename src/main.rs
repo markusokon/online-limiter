@@ -23,6 +23,13 @@ fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    let ffox_file: String = match cur_ver.get_value("FFOX_RECOVERY_JSON_LOCATION") {
+        Ok(val) => val,
+        Err(err) => {
+            println!("Could not obtain FFOX_RECOVERY_JSON_LOCATION env var: {err}");
+            return Ok(());
+        }
+    };
 
     let steam_ids = vec![steam_id.as_str()];
 
@@ -61,8 +68,25 @@ fn main() -> anyhow::Result<()> {
             if current_time.hour() == 0 && current_time.minute() == 0 {
                 duration_left = allowed_duration;
             }
+
+            let sites = vec![
+                "YouTube",
+                "Twitch",
+                "Disney+",
+                "Netflix",
+                "Prime Video"
+            ];
+            let tabs = fxtabs::open_tabs(ffox_file.as_str()).unwrap_or_else(|_err| Vec::new());
+            let filtered_tabs: Vec<&str> = tabs.iter().filter(|tab| {
+                for site in &sites {
+                    if tab.title.contains(site) {
+                        return true;
+                    }
+                }
+                return false;
+            }).map(|tab| { tab.title.as_str() }).collect();
             let game_id = user.gameid;
-            if !game_id.is_empty() && !duration_left.is_zero() {
+            if (!game_id.is_empty() || !filtered_tabs.is_empty()) && !duration_left.is_zero() {
                 duration_left -= tick_interval;
             }
 
@@ -74,8 +98,11 @@ fn main() -> anyhow::Result<()> {
             if duration_left.is_zero() {
                 no_gaming();
             }
-            println!("Time left: {duration_left:?}");
+
+            let joined_tab_string = filtered_tabs.join(", ");
+            println!("Found Tabs: {joined_tab_string}");
             println!("Current gameid: {game_id}");
+            println!("Time left: {duration_left:?}");
             std::thread::sleep(tick_interval);
         }
     }
