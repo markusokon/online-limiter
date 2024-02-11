@@ -1,12 +1,60 @@
 use chrono::{Datelike, Local, TimeZone};
 use chrono::Timelike;
+use std::ffi::OsString;
 use std::io::{Read, Write, Seek};
 use std::str::FromStr;
+use std::sync::mpsc;
 use std::time::Duration;
+use windows_service::{define_windows_service, Result, service_control_handler, service_dispatcher};
+use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
+use windows_service::service_control_handler::ServiceControlHandlerResult;
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-fn main() -> anyhow::Result<()> {
+define_windows_service!(ffi_service_main, online_limiter_service_main);
+
+const SERVICE_NAME: &str = "online-limiter";
+const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+fn online_limiter_service_main(arguments: Vec<OsString>) {
+    if let Err(_e) = run_service(arguments) {
+        // Handle error in some way.
+    }
+}
+
+fn main() -> Result<()> {
+    service_dispatcher::start(SERVICE_NAME, ffi_service_main)?;
+    Ok(())
+}
+
+fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+
+            ServiceControl::Stop => {
+                shutdown_tx.send(()).unwrap();
+                ServiceControlHandlerResult::NoError
+            }
+
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+
+    let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
+
+    status_handle.set_service_status(ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    })?;
+
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let cur_ver = hkcu.open_subkey("ENVIRONMENT").unwrap();
     let api_key: String = match cur_ver.get_value("STEAM_API_KEY") {
@@ -103,8 +151,23 @@ fn main() -> anyhow::Result<()> {
             println!("Found Tabs: {joined_tab_string}");
             println!("Current gameid: {game_id}");
             println!("Time left: {duration_left:?}");
-            std::thread::sleep(tick_interval);
+            match shutdown_rx.recv_timeout(tick_interval) {
+                // Break the loop either upon stop or channel disconnect
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+
+                // Continue work if no events were received within the timeout
+                Err(mpsc::RecvTimeoutError::Timeout) => (),
+            };
         }
+        status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
     }
 }
 
