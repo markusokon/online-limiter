@@ -1,6 +1,7 @@
 use chrono::{Datelike, Local, TimeZone};
 use chrono::Timelike;
 use std::ffi::OsString;
+use std::fs::File;
 use std::io::{Read, Write, Seek};
 use std::str::FromStr;
 use std::sync::mpsc;
@@ -18,11 +19,13 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
 fn online_limiter_service_main(arguments: Vec<OsString>) {
     if let Err(_e) = run_service(arguments) {
-        // Handle error in some way.
+        log!("error\n");
     }
 }
 
 fn main() -> Result<()> {
+    init_log();
+    log!("Main hello.\n");
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)?;
     Ok(())
 }
@@ -88,7 +91,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     let mut storage_file_path = std::env::temp_dir();
     storage_file_path.push("countdown.txt");
 
-    let mut storage_file = std::fs::File::options().read(true).write(true).create(true).open(storage_file_path).unwrap();
+    let mut storage_file = File::options().read(true).write(true).create(true).open(storage_file_path).unwrap();
 
     let mut duration_left;
     if storage_file.metadata().unwrap().len() > 0 {
@@ -185,3 +188,24 @@ fn no_gaming() {
         }
     }
 }
+
+
+static mut LOG_FILE : Option<File> = None;
+
+fn init_log() {
+    let mut log_file_path = std::env::temp_dir();
+    log_file_path.push("limiter.log");
+    unsafe { &mut LOG_FILE }.replace(File::options().append(true).create(true).open(log_file_path).unwrap());
+}
+
+macro_rules! log {
+    ($($args:tt)*) => {
+        if let Some(ref mut file) = unsafe { &mut LOG_FILE } {
+            write!(file, $($args)*).unwrap();
+        }
+        else {
+            panic!("No log file!");
+        }
+    }
+}
+pub (crate) use log; // make it visible above this line
