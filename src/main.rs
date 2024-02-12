@@ -2,7 +2,7 @@ use chrono::{Datelike, Local, TimeZone};
 use chrono::Timelike;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{Read, Write, Seek};
+use std::io::{Read, Write, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -20,7 +20,9 @@ static mut LOG_FILE : Option<File> = None;
 fn init_log() {
     let mut log_file_path = std::env::temp_dir();
     log_file_path.push("limiter.log");
-    unsafe { &mut LOG_FILE }.replace(File::options().write(true).append(true).create(true).open(log_file_path).unwrap());
+    let mut file = File::options().write(true).read(true).create(true).open(log_file_path).unwrap();
+    file.seek(SeekFrom::End(0)).unwrap(); //can't use append because we want to truncate during rotate_log
+    unsafe { &mut LOG_FILE }.replace(file);
 }
 
 fn rotate_log() -> anyhow::Result<()> {
