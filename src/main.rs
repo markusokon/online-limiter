@@ -20,7 +20,33 @@ static mut LOG_FILE : Option<File> = None;
 fn init_log() {
     let mut log_file_path = std::env::temp_dir();
     log_file_path.push("limiter.log");
-    unsafe { &mut LOG_FILE }.replace(File::options().append(true).create(true).open(log_file_path).unwrap());
+    unsafe { &mut LOG_FILE }.replace(File::options().write(true).append(true).create(true).open(log_file_path).unwrap());
+}
+
+fn rotate_log() -> anyhow::Result<()> {
+    let mut log_file = unsafe { LOG_FILE.as_mut().unwrap() };
+
+    let mut historic_log_file_path = std::env::temp_dir();
+    for i in 1..100 {
+        historic_log_file_path.push(format!("limiter.{i}.log"));
+        if !historic_log_file_path.exists() { break }
+        historic_log_file_path.pop();
+    }
+
+    let mut historic_log_file = File::options().write(true).create(true).open(historic_log_file_path)?;
+
+    log_file.rewind()?;
+    std::io::copy(&mut log_file, &mut historic_log_file)?; //TODO(Rennorb) @perf: Copy whole file instead of file contents.
+
+    if historic_log_file.flush().is_err() {
+        log_file.seek(std::io::SeekFrom::End(0))?;
+        return Ok(()); //TODO(Rennorb) @correctness: Which error to return here? ok is nor really correct.
+    }
+
+    log_file.set_len(0)?;
+    log_file.rewind()?;
+
+    Ok(())
 }
 
 
@@ -141,8 +167,10 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
         let last_midnight = Local.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0).unwrap();
         if last_modified < std::time::SystemTime::from(last_midnight) {
             duration_left = allowed_duration;
+            storage_file.set_len(0).unwrap();
             storage_file.rewind().unwrap();
             write!(storage_file, "{}", duration_left.as_secs()).unwrap();
+            _ = rotate_log();
         } else {
             let mut dur_str = Default::default();
             _ = storage_file.read_to_string(&mut dur_str);
@@ -159,6 +187,7 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
             let current_time = Local::now();
             if current_time.hour() == 0 && current_time.minute() == 0 {
                 duration_left = allowed_duration;
+                _ = rotate_log();
             }
 
             let sites = vec![
