@@ -1,12 +1,104 @@
 use chrono::{Datelike, Local, TimeZone};
 use chrono::Timelike;
+use std::ffi::OsString;
+use std::fs::File;
 use std::io::{Read, Write, Seek};
 use std::str::FromStr;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
+use windows_service::{define_windows_service, Result, service_control_handler, service_dispatcher};
+use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
+use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-fn main() -> anyhow::Result<()> {
+define_windows_service!(ffi_service_main, online_limiter_service_main);
+
+static mut LOG_FILE : Option<File> = None;
+
+fn init_log() {
+    let mut log_file_path = std::env::temp_dir();
+    log_file_path.push("limiter.log");
+    unsafe { &mut LOG_FILE }.replace(File::options().append(true).create(true).open(log_file_path).unwrap());
+}
+
+
+macro_rules! log {
+    ($($args:tt)*) => {
+        if let Some(ref mut file) = unsafe { &mut LOG_FILE } {
+            writeln!(file, $($args)*).unwrap();
+        }
+        else {
+            panic!("No log file!");
+        }
+    }
+}
+
+const SERVICE_NAME: &str = "online-limiter";
+const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+fn main() -> Result<()> {
+    init_log();
+    let service_result = service_dispatcher::start(SERVICE_NAME, ffi_service_main);
+    if let Some(ref mut file) = unsafe { &mut LOG_FILE } {
+        file.flush().unwrap();
+    }
+    service_result
+}
+
+fn online_limiter_service_main(arguments: Vec<OsString>) {
+    if let Err(err) = register_event_handler(arguments) {
+        log!("error, {err}");
+    }
+}
+
+fn register_event_handler(_arguments: Vec<OsString>) -> anyhow::Result<()> {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+
+            ServiceControl::Stop => {
+                shutdown_tx.send(()).unwrap();
+                ServiceControlHandlerResult::NoError
+            }
+
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+    let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
+
+    let result = run_service(status_handle, shutdown_rx);
+
+    status_handle.set_service_status(ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    })?;
+
+    log!("Service ended at: {}", Local::now());
+
+    return result
+}
+
+fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) -> anyhow::Result<()> {
+    log!("Service started at: {}", Local::now());
+    status_handle.set_service_status(ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    })?;
+
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let cur_ver = hkcu.open_subkey("ENVIRONMENT").unwrap();
     let api_key: String = match cur_ver.get_value("STEAM_API_KEY") {
@@ -40,7 +132,7 @@ fn main() -> anyhow::Result<()> {
     let mut storage_file_path = std::env::temp_dir();
     storage_file_path.push("countdown.txt");
 
-    let mut storage_file = std::fs::File::options().read(true).write(true).create(true).open(storage_file_path).unwrap();
+    let mut storage_file = File::options().read(true).write(true).create(true).open(storage_file_path).unwrap();
 
     let mut duration_left;
     if storage_file.metadata().unwrap().len() > 0 {
@@ -60,11 +152,11 @@ fn main() -> anyhow::Result<()> {
         duration_left = allowed_duration;
     }
 
-    loop {
+    'outer: loop {
         for user in steam_api::get_profile_info(&steam_ids, &api_key)?.user {
             let old_duration_left = duration_left;
 
-            let current_time = chrono::prelude::Local::now();
+            let current_time = Local::now();
             if current_time.hour() == 0 && current_time.minute() == 0 {
                 duration_left = allowed_duration;
             }
@@ -100,12 +192,19 @@ fn main() -> anyhow::Result<()> {
             }
 
             let joined_tab_string = filtered_tabs.join(", ");
-            println!("Found Tabs: {joined_tab_string}");
-            println!("Current gameid: {game_id}");
-            println!("Time left: {duration_left:?}");
-            std::thread::sleep(tick_interval);
+            log!("Found Tabs: {joined_tab_string}");
+            log!("Current gameid: {game_id}");
+            log!("Time left: {duration_left:?}");
+            match shutdown_rx.recv_timeout(tick_interval) {
+                // Break the loop either upon stop or channel disconnect
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break 'outer,
+
+                // Continue work if no events were received within the timeout
+                Err(mpsc::RecvTimeoutError::Timeout) => (),
+            };
         }
     }
+    Ok(())
 }
 
 fn no_gaming() {
