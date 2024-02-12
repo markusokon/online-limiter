@@ -12,6 +12,7 @@ use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExit
 use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
+use winrt_notification::{Sound, Toast};
 
 define_windows_service!(ffi_service_main, online_limiter_service_main);
 
@@ -226,6 +227,15 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
             log!("Found Tabs: {joined_tab_string}");
             log!("Current gameid: {game_id}");
             log!("Time left: {duration_left:?}");
+            if duration_left == tick_interval * 10 { //TODO(Markus) @cleanup: cleanup when moving tick_interval/max_duration into environment variables
+                Toast::new(Toast::POWERSHELL_APP_ID)
+                    .title("Online-Limiter")
+                    .text1(format!("Only {duration_left:?} left.").as_str())
+                    .sound(Some(Sound::SMS))
+                    .duration(winrt_notification::Duration::Short)
+                    .show()
+                    .expect("unable to toast");
+            }
             match shutdown_rx.recv_timeout(tick_interval) {
                 // Break the loop either upon stop or channel disconnect
                 Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break 'outer,
