@@ -14,7 +14,7 @@ use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 mod logging;
 use logging::*;
-use winrt_notification::{Sound, Toast};
+use winrt_notification::{LoopableSound, Sound, Toast};
 
 define_windows_service!(ffi_service_main, online_limiter_service_main);
 
@@ -85,21 +85,21 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
     let api_key: String = match cur_ver.get_value("STEAM_API_KEY") {
         Ok(val) => val,
         Err(err) => {
-            println!("Could not obtain API_KEY env var: {err}");
+            log!("Could not obtain API_KEY env var: {err}");
             return Ok(());
         }
     };
     let steam_id: String = match cur_ver.get_value("STEAM_ID") {
         Ok(val) => val,
         Err(err) => {
-            println!("Could not obtain STEAM_ID env var: {err}");
+            log!("Could not obtain STEAM_ID env var: {err}");
             return Ok(());
         }
     };
     let ffox_file: String = match cur_ver.get_value("FFOX_RECOVERY_JSON_LOCATION") {
         Ok(val) => val,
         Err(err) => {
-            println!("Could not obtain FFOX_RECOVERY_JSON_LOCATION env var: {err}");
+            log!("Could not obtain FFOX_RECOVERY_JSON_LOCATION env var: {err}");
             return Ok(());
         }
     };
@@ -180,13 +180,15 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
             log!("Current gameid: {game_id}");
             log!("Time left: {duration_left:?}");
             if duration_left == tick_interval * 10 { //TODO(Markus) @cleanup: cleanup when moving tick_interval/max_duration into environment variables
-                Toast::new(Toast::POWERSHELL_APP_ID)
-                    .title("Online-Limiter")
+                if let Err(err) = Toast::new(Toast::POWERSHELL_APP_ID).title("Online-Limiter")
                     .text1(format!("Only {duration_left:?} left.").as_str())
-                    .sound(Some(Sound::SMS))
-                    .duration(winrt_notification::Duration::Short)
+                    .sound(Some(Sound::Loop(LoopableSound::Alarm4)))
+                    .duration(winrt_notification::Duration::Long)
                     .show()
-                    .expect("unable to toast");
+                {
+                    log!("Error while sending notification: {err}");
+                    return Ok(());
+                }
             }
             match shutdown_rx.recv_timeout(tick_interval) {
                 // Break the loop either upon stop or channel disconnect
@@ -210,7 +212,7 @@ fn no_gaming() {
     for (_process_id, process_names) in games {
         for process_name in process_names {
             let _ = std::process::Command::new("cmd")
-                .args(["/C", std::format!("taskkill /IM {process_name}").as_str()]).output();
+                .args(["/C", std::format!("taskkill /F /IM {process_name}").as_str()]).output();
         }
     }
 }
