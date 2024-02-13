@@ -2,7 +2,7 @@ use chrono::{Datelike, Local, TimeZone};
 use chrono::Timelike;
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{Read, Write, Seek};
+use std::io::{Read, Write, Seek, SeekFrom};
 use std::str::FromStr;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -12,11 +12,57 @@ use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExit
 use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
-mod logging;
-use logging::*;
 use winrt_notification::{Sound, Toast};
 
 define_windows_service!(ffi_service_main, online_limiter_service_main);
+
+static mut LOG_FILE : Option<File> = None;
+
+fn init_log() {
+    let mut log_file_path = std::env::temp_dir();
+    log_file_path.push("limiter.log");
+    let mut file = File::options().write(true).read(true).create(true).open(log_file_path).unwrap();
+    file.seek(SeekFrom::End(0)).unwrap(); //can't use append because we want to truncate during rotate_log
+    unsafe { &mut LOG_FILE }.replace(file);
+}
+
+fn rotate_log() -> anyhow::Result<()> {
+    let mut log_file = unsafe { LOG_FILE.as_mut().unwrap() };
+
+    let mut historic_log_file_path = std::env::temp_dir();
+    for i in 1..100 {
+        historic_log_file_path.push(format!("limiter.{i}.log"));
+        if !historic_log_file_path.exists() { break }
+        historic_log_file_path.pop();
+    }
+
+    let mut historic_log_file = File::options().write(true).create(true).open(historic_log_file_path)?;
+
+    log_file.rewind()?;
+    std::io::copy(&mut log_file, &mut historic_log_file)?; //TODO(Rennorb) @perf: Copy whole file instead of file contents.
+
+    if historic_log_file.flush().is_err() {
+        log_file.seek(std::io::SeekFrom::End(0))?;
+        return Ok(()); //TODO(Rennorb) @correctness: Which error to return here? ok is nor really correct.
+    }
+
+    log_file.set_len(0)?;
+    log_file.rewind()?;
+
+    Ok(())
+}
+
+
+macro_rules! log {
+    ($($args:tt)*) => {
+        if let Some(ref mut file) = unsafe { &mut LOG_FILE } {
+            writeln!(file, $($args)*).unwrap();
+        }
+        else {
+            panic!("No log file!");
+        }
+    }
+}
 
 const SERVICE_NAME: &str = "online-limiter";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -24,7 +70,9 @@ const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 fn main() -> Result<()> {
     init_log();
     let service_result = service_dispatcher::start(SERVICE_NAME, ffi_service_main);
-    flush_log();
+    if let Some(ref mut file) = unsafe { &mut LOG_FILE } {
+        file.flush().unwrap();
+    }
     service_result
 }
 
@@ -63,13 +111,13 @@ fn register_event_handler(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         process_id: None,
     })?;
 
-    log!("Service ended.");
+    log!("Service ended at: {}", Local::now());
 
     return result
 }
 
 fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) -> anyhow::Result<()> {
-    log!("Service started.");
+    log!("Service started at: {}", Local::now());
     status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::Running,
