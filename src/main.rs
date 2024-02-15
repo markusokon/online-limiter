@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
+use steam_api::structs::profile::{User, Users};
 use windows_service::{define_windows_service, Result, service_control_handler, service_dispatcher};
 use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
 use windows_service::service_control_handler::{ServiceControlHandlerResult, ServiceStatusHandle};
@@ -135,69 +136,75 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
         duration_left = allowed_duration;
     }
 
-    'outer: loop {
-        for user in steam_api::get_profile_info(&steam_ids, &api_key)?.user {
-            let old_duration_left = duration_left;
+    loop {
+        let old_duration_left = duration_left;
 
-            let current_time = Local::now();
-            if current_time.hour() == 0 && current_time.minute() == 0 {
-                duration_left = allowed_duration;
-                _ = rotate_log();
-            }
-
-            let sites = vec![
-                "YouTube",
-                "Twitch",
-                "Disney+",
-                "Netflix",
-                "Prime Video"
-            ];
-            let tabs = fxtabs::open_tabs(ffox_file.as_str()).unwrap_or_else(|_err| Vec::new());
-            let filtered_tabs: Vec<&str> = tabs.iter().filter(|tab| {
-                for site in &sites {
-                    if tab.title.contains(site) {
-                        return true;
-                    }
-                }
-                return false;
-            }).map(|tab| { tab.title.as_str() }).collect();
-            let game_id = user.gameid;
-            if (!game_id.is_empty() || !filtered_tabs.is_empty()) && !duration_left.is_zero() {
-                duration_left -= tick_interval;
-            }
-
-            if old_duration_left != duration_left {
-                storage_file.rewind().unwrap();
-                write!(storage_file, "{}", duration_left.as_secs()).unwrap();
-            }
-
-            if duration_left.is_zero() {
-                no_gaming();
-            }
-
-            let joined_tab_string = filtered_tabs.join(", ");
-            log!("Found Tabs: {joined_tab_string}");
-            log!("Current gameid: {game_id}");
-            log!("Time left: {duration_left:?}");
-            if duration_left == tick_interval * 10 { //TODO(Markus) @cleanup: cleanup when moving tick_interval/max_duration into environment variables
-                if let Err(err) = Toast::new(Toast::POWERSHELL_APP_ID).title("Online-Limiter")
-                    .text1(format!("Only {duration_left:?} left.").as_str())
-                    .sound(Some(Sound::Loop(LoopableSound::Alarm4)))
-                    .duration(winrt_notification::Duration::Long)
-                    .show()
-                {
-                    log!("Error while sending notification: {err}");
-                    return Ok(());
-                }
-            }
-            match shutdown_rx.recv_timeout(tick_interval) {
-                // Break the loop either upon stop or channel disconnect
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break 'outer,
-
-                // Continue work if no events were received within the timeout
-                Err(mpsc::RecvTimeoutError::Timeout) => (),
-            };
+        let current_time = Local::now();
+        if current_time.hour() == 0 && current_time.minute() == 0 {
+            duration_left = allowed_duration;
+            _ = rotate_log();
         }
+
+        let sites = vec![
+            "YouTube",
+            "Twitch",
+            "Disney+",
+            "Netflix",
+            "Prime Video"
+        ];
+        let tabs = fxtabs::open_tabs(ffox_file.as_str()).unwrap_or_else(|_err| Vec::new());
+        let filtered_tabs: Vec<&str> = tabs.iter().filter(|tab| {
+            for site in &sites {
+                if tab.title.contains(site) {
+                    return true;
+                }
+            }
+            return false;
+        }).map(|tab| { tab.title.as_str() }).collect();
+
+        let users = steam_api::get_profile_info(&steam_ids, &api_key).unwrap_or_else(|err| {
+            log!("error while reading steam api: {err}");
+            Users::default()
+        });
+        let default_user = &User::default();
+        let user = users.user.first().unwrap_or(default_user);
+        let game_id = user.gameid.as_str();
+
+        if (!game_id.is_empty() || !filtered_tabs.is_empty()) && !duration_left.is_zero() {
+            duration_left -= tick_interval;
+        }
+
+        if old_duration_left != duration_left {
+            storage_file.rewind().unwrap();
+            write!(storage_file, "{}", duration_left.as_secs()).unwrap();
+        }
+
+        if duration_left.is_zero() {
+            no_gaming();
+        }
+
+        let joined_tab_string = filtered_tabs.join(", ");
+        log!("Found Tabs: {joined_tab_string}");
+        log!("Current gameid: {game_id}");
+        log!("Time left: {duration_left:?}");
+        if duration_left == tick_interval * 10 { //TODO(Markus) @cleanup: cleanup when moving tick_interval/max_duration into environment variables
+            if let Err(err) = Toast::new(Toast::POWERSHELL_APP_ID).title("Online-Limiter")
+                .text1(format!("Only {duration_left:?} left.").as_str())
+                .sound(Some(Sound::Loop(LoopableSound::Alarm4)))
+                .duration(winrt_notification::Duration::Long)
+                .show()
+            {
+                log!("Error while sending notification: {err}");
+                return Ok(());
+            }
+        }
+        match shutdown_rx.recv_timeout(tick_interval) {
+            // Break the loop either upon stop or channel disconnect
+            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+
+            // Continue work if no events were received within the timeout
+            Err(mpsc::RecvTimeoutError::Timeout) => (),
+        };
     }
     Ok(())
 }
