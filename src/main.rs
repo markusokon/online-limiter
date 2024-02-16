@@ -175,6 +175,7 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
         }
 
         if old_duration_left != duration_left {
+            storage_file.set_len(0).unwrap();
             storage_file.rewind().unwrap();
             write!(storage_file, "{}", duration_left.as_secs()).unwrap();
         }
