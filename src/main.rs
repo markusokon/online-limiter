@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{Read, Write, Seek};
 use std::str::FromStr;
 use std::sync::mpsc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use steam_api::structs::profile::{User, Users};
 use windows_service::{define_windows_service, Result, service_control_handler, service_dispatcher};
@@ -30,14 +30,44 @@ fn main() -> Result<()> {
 }
 
 fn online_limiter_service_main(arguments: Vec<OsString>) {
-    if let Err(err) = register_event_handler(arguments) {
-        log!("error, {err}");
-    }
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let status_handle = match register_event_handler(arguments, shutdown_tx) {
+        Ok(val) => val,
+        Err(err) => {
+            log!("error, {err}");
+            return
+        }
+    };
+
+    _ = match run_service(status_handle, shutdown_rx) {
+        Ok(val) => val,
+        Err(err) => {
+            log!("error, {err}");
+            return
+        }
+    };
+
+    _ = match status_handle.set_service_status(ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    }) {
+        Ok(val) => val,
+        Err(err) => {
+            log!("error, {err}");
+            return;
+        }
+    };
+
+
+    log!("Service ended.");
 }
 
-fn register_event_handler(_arguments: Vec<OsString>) -> anyhow::Result<()> {
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
-
+fn register_event_handler(_arguments: Vec<OsString>, shutdown_tx: Sender<()>) -> Result<ServiceStatusHandle> {
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -50,23 +80,7 @@ fn register_event_handler(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             _ => ServiceControlHandlerResult::NotImplemented,
         }
     };
-    let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
-
-    let result = run_service(status_handle, shutdown_rx);
-
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Stopped,
-        controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    })?;
-
-    log!("Service ended.");
-
-    return result
+    return service_control_handler::register(SERVICE_NAME, event_handler)
 }
 
 fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) -> anyhow::Result<()> {
@@ -214,7 +228,8 @@ fn no_gaming() {
     let games = vec![
         ("1086940", vec!["bg3.exe", "bg3_dx11.exe"]), //Baldur's Gate 3
         ("671860", vec!["BattleBit.exe"]), //BattleBit Remastered
-        ("227300", vec!["eurotrucks2.exe"]) //Euro Truck Simulator 2
+        ("227300", vec!["eurotrucks2.exe"]), //Euro Truck Simulator 2
+        ("281990", vec!["stellaris.exe"])
     ];
 
     for (_process_id, process_names) in games {
