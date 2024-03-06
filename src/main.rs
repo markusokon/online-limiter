@@ -47,6 +47,9 @@ fn online_limiter_service_main(arguments: Vec<OsString>) {
         }
     };
 
+    let _ = std::process::Command::new("cmd").args(["/C", "shutdown /s"]).output();
+    log!("Shutdown command sent.");
+
     _ = match status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::Stopped,
@@ -62,8 +65,6 @@ fn online_limiter_service_main(arguments: Vec<OsString>) {
             return;
         }
     };
-
-
     log!("Service ended.");
 }
 
@@ -123,6 +124,8 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
 
     let allowed_duration = Duration::from_secs(4 * 60 * 60);
     let tick_interval = Duration::from_secs(30);
+    let warning_time = tick_interval * 10;
+    let point_of_no_return = warning_time * 6;
     assert_eq!(allowed_duration.as_secs() % tick_interval.as_secs(), 0); // needed for the is_zero check later on
 
     let mut storage_file_path = std::env::temp_dir();
@@ -150,11 +153,13 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
         duration_left = allowed_duration;
     }
 
+    let mut last_duration_change = Local::now();
+
     loop {
         let old_duration_left = duration_left;
 
         let current_time = Local::now();
-        if current_time.hour() == 0 && current_time.minute() == 0 {
+        if (current_time.hour() == 0 && current_time.minute() == 0) || (last_duration_change.day() != Local::now().day()) {
             duration_left = allowed_duration;
             _ = rotate_log();
         }
@@ -184,8 +189,9 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
         let user = users.user.first().unwrap_or(default_user);
         let game_id = user.gameid.as_str();
 
-        if (!game_id.is_empty() || !filtered_tabs.is_empty()) && !duration_left.is_zero() {
+        if (!game_id.is_empty() || !filtered_tabs.is_empty() || duration_left <= point_of_no_return) && !duration_left.is_zero() {
             duration_left -= tick_interval;
+            last_duration_change = Local::now();
         }
 
         if old_duration_left != duration_left {
@@ -196,13 +202,14 @@ fn run_service(status_handle: ServiceStatusHandle, shutdown_rx: Receiver<()>) ->
 
         if duration_left.is_zero() {
             no_gaming();
+            break;
         }
 
         let joined_tab_string = filtered_tabs.join(", ");
         log!("Found Tabs: {joined_tab_string}");
         log!("Current gameid: {game_id}");
         log!("Time left: {duration_left:?}");
-        if duration_left == tick_interval * 10 { //TODO(Markus) @cleanup: cleanup when moving tick_interval/max_duration into environment variables
+        if duration_left == warning_time { //TODO(Markus) @cleanup: cleanup when moving tick_interval/max_duration into environment variables
             if let Err(err) = Toast::new(Toast::POWERSHELL_APP_ID).title("Online-Limiter")
                 .text1(format!("Only {duration_left:?} left.").as_str())
                 .sound(Some(Sound::Loop(LoopableSound::Alarm4)))
@@ -229,13 +236,14 @@ fn no_gaming() {
         ("1086940", vec!["bg3.exe", "bg3_dx11.exe"]), //Baldur's Gate 3
         ("671860", vec!["BattleBit.exe"]), //BattleBit Remastered
         ("227300", vec!["eurotrucks2.exe"]), //Euro Truck Simulator 2
-        ("281990", vec!["stellaris.exe"])
+        ("281990", vec!["stellaris.exe"]), //Stellaris
+        ("286160", vec!["Tabletop Simulator.exe"]) //Tabletop Simulator
     ];
 
     for (_process_id, process_names) in games {
         for process_name in process_names {
             let _ = std::process::Command::new("cmd")
-                .args(["/C", std::format!("taskkill /F /IM {process_name}").as_str()]).output();
+                .args(["/C", std::format!("taskkill /F /IM \"{process_name}\"").as_str()]).output();
         }
     }
 }
